@@ -81,11 +81,10 @@ function run_main_simulation_mode(CurrentMode, SaveFolderName, SaveFileName)
     end
 
     %% 5. Simulation Setup
- 
     rng(0); 
     AgentInitialState_matrix = rand(4,AgentQuantity) - 0.5;
     lambda_set = [7/4; 1];
-    Kappa_C = 100;
+    Kappa_C = 1000;
     AdjMatrix  = MultiAgentSystem.Agent_Topology.AdjacencyMatrix;
     NeighbourSet = MultiAgentSystem.Agent_Topology.NeighbourSet;
 
@@ -94,22 +93,34 @@ function run_main_simulation_mode(CurrentMode, SaveFolderName, SaveFileName)
     
     TrackingError_vector = zeros(1, numel(t_set));
 
-    %% 6. 
-    switch CurrentMode
-        case 'distributed_POE'
+    %% 6. Mode-specific initialization
+    % Determine if this is one of the 5 masked aggregation modes
+    masked_methods = {'poe', 'gpoe', 'moe', 'bcm', 'rbcm'};
+    is_masked_mode = ismember(lower(CurrentMode), masked_methods);
+
+    switch lower(CurrentMode)
+        case masked_methods
+            % All 5 masked aggregation modes share the same init structure
+            Kappa_P = 10;
+            agg_method = lower(CurrentMode);
+            [P_inducing, p_dim] = gp_masked_aggregation_init( ...
+                LocalGP_set, AgentQuantity, NumInducingPoints, ...
+                InducingPoints_Coordinates, agg_method);
+            Zeta_vector_inducing = zeros(p_dim, AgentQuantity, NumInducingPoints);
+            % Initial DAC update at t=0 (TimeStep=0 → no ODE, just build GP)
+            [MaskedGP, Zeta_vector_inducing] = gp_masked_aggregation_update( ...
+                P_inducing, Zeta_vector_inducing, L, Kappa_P, AgentQuantity, ...
+                NumInducingPoints, 0, InducingPoints_Coordinates, SigmaF, SigmaL, ...
+                x_dim, agg_method, p_dim);
+
+        case 'distributed_poe'
             Kappa_P = 1000;  
             Zeta_vector = zeros(4, AgentQuantity);
-        case 'masked_POE'
-            Kappa_P = 10;
-            Zeta_vector = zeros(4, AgentQuantity); 
-            P = gp_masked_poe_init(LocalGP_set, AgentQuantity, NumInducingPoints, InducingPoints_Coordinates);
-            Zeta_vector_inducing = zeros(4, AgentQuantity, NumInducingPoints);
-            [MaskedGP_POE, Zeta_vector_inducing] = gp_masked_poe_update( ...
-                P, Zeta_vector_inducing, L, Kappa_P, AgentQuantity, ...
-                NumInducingPoints, 0, InducingPoints_Coordinates, SigmaF, SigmaL, x_dim);      
-        case 'distributed_RBCM'
+
+        case 'distributed_rbcm'
             Kappa_P = 1000;  
             Zeta_vector = zeros(6, AgentQuantity); 
+
         otherwise % 'local', 'exact', 'none'
             Kappa_P = 0;  
             Zeta_vector = zeros(4, AgentQuantity);
@@ -129,24 +140,26 @@ function run_main_simulation_mode(CurrentMode, SaveFolderName, SaveFileName)
         Phi_Xi_vector = zeros(q_dim, AgentQuantity);
         tic_gp = tic;
 
-        switch CurrentMode
-            case 'distributed_POE'
-                [Phi_Xi_vector, Zeta_vector, Xi_diff] = gp_poe( ...
-                    AgentState_matrix, LocalGP_set, L,  ...
-                    Kappa_P, AgentQuantity, Zeta_vector, t_step);
-
-            case 'masked_POE'
+        switch lower(CurrentMode)
+            case masked_methods
+                % Step 1: Predict at current agent states using fused GP
                 for AgentNr = 1:AgentQuantity
                     x_i = AgentState_matrix(:, AgentNr);
-                    [mu_hat, ~] = MaskedGP_POE{AgentNr}.predict(x_i);
+                    [mu_hat, ~] = MaskedGP{AgentNr}.predict(x_i);
                     Phi_Xi_vector(:, AgentNr) = mu_hat;
                 end
-                [MaskedGP_POE, Zeta_vector_inducing] = gp_masked_poe_update( ...
-                    P, Zeta_vector_inducing,  L, ...
-                    Kappa_P, AgentQuantity, NumInducingPoints, t_step, ...
-                    InducingPoints_Coordinates, SigmaF, SigmaL, x_dim);
+                % Step 2: Update DAC and rebuild fused GP for next step
+                [MaskedGP, Zeta_vector_inducing] = gp_masked_aggregation_update( ...
+                    P_inducing, Zeta_vector_inducing, L, Kappa_P, AgentQuantity, ...
+                    NumInducingPoints, t_step, InducingPoints_Coordinates, ...
+                    SigmaF, SigmaL, x_dim, agg_method, p_dim);
 
-            case 'distributed_RBCM'
+            case 'distributed_poe'
+                [Phi_Xi_vector, Zeta_vector, ~] = gp_poe( ...
+                    AgentState_matrix, LocalGP_set, L, ...
+                    Kappa_P, AgentQuantity, Zeta_vector, t_step);
+
+            case 'distributed_rbcm'
                 [Phi_Xi_vector, Zeta_vector] = gp_rbcm( ...
                     AgentState_matrix, LocalGP_set, L, ...
                     Kappa_P, AgentQuantity, Zeta_vector, t_step);
@@ -182,8 +195,7 @@ function run_main_simulation_mode(CurrentMode, SaveFolderName, SaveFileName)
     end
     fprintf('Mode: %s done, 总时间=%.2f s, GP=%.2f s, ODE=%.2f s\n', CurrentMode, toc, t_gp, t_ode);
 
-    %% 8. 计算 Ultimate Error Bound
- 
+    %% 8. Compute Ultimate Error Bound
     L_tilde = MultiAgentSystem.Extended_Topology.LaplacianMatrix(1:AgentQuantity, 1:AgentQuantity);
     sigma_L_tilde = min(svd(L_tilde));
     sigma_bar_L_tilde = max(svd(L_tilde));
@@ -227,10 +239,11 @@ function run_main_simulation_mode(CurrentMode, SaveFolderName, SaveFileName)
         bound_exact(k)       = C * Delta_hat;
     end
 
-    %% 9. 结果保存
-    save([SaveFolderName,'\',SaveFileName,'.mat']);
-    
+    %% 9. Save results
+    if ~exist(SaveFolderName, 'dir')
+        mkdir(SaveFolderName);
+    end
     save(fullfile(SaveFolderName, [SaveFileName, '.mat']), ...
         't_set', 'TrackingError_vector', 'CurrentMode', ...
         'bound_distributed', 'bound_local', 'bound_exact'); 
-end                     
+end
