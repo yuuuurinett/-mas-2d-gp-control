@@ -143,41 +143,8 @@ for k = 1:numel(t_set)
 end
 fprintf('Mode: %s done, total=%.2fs, GP=%.2fs, ODE=%.2fs\n', CurrentMode, toc, t_gp, t_ode);
 
-%% 8. Error Bounds
-%{
-L_tilde = MultiAgentSystem.Extended_Topology.LaplacianMatrix(1:AgentQuantity,1:AgentQuantity);
-sigma_L_tilde = min(svd(L_tilde));
-sigma_bar_L_tilde = max(svd(L_tilde));
-Q_val = 600; P_val = Q_val / (2*lambda_set(1));
-iota = norm(eye(AgentQuantity)-L_tilde)*lambda_set(1);
-Upsilon = [Kappa_C*sigma_L_tilde-iota, -0.5*(1+lambda_set(1))-0.5*sqrt(P_val);
-           -0.5*(1+lambda_set(1))-0.5*sqrt(P_val), 0.5*Q_val];
-sigma_Upsilon = min(eig(Upsilon));
-C = sqrt(AgentQuantity)*sigma_bar_L_tilde*sqrt(P_val)*(1+lambda_set(1))/(sigma_Upsilon*sigma_L_tilde);
-Delta_hat = 1; GP_tau_bound = 0.01; r_Omega = 2*sqrt(2);
-beta_val = max(0, 2*2*log(r_Omega*sqrt(2)) - log(2*GP_tau_bound) - 2*log(GP_delta/AgentQuantity));
-
-bound_distributed = zeros(1,numel(t_set));
-bound_local = zeros(1,numel(t_set));
-bound_exact = zeros(1,numel(t_set));
-for k = 1:numel(t_set)
-    LeaderState_k = x_trajectory_set(:,k);
-    s_dist = 0; s_local = 0; s_prec = 0;
-    for n = 1:AgentQuantity
-        [~,var_n] = LocalGP_set{n}.predict(LeaderState_k);
-        v = var_n(1);
-        s_dist  = s_dist  + sqrt(v)/v;
-        s_local = s_local + sqrt(v);
-        s_prec  = s_prec  + 1/v;
-    end
-    bound_distributed(k) = C*(2*sqrt(beta_val)*s_dist/s_prec + Delta_hat);
-    bound_local(k)       = C*(2*sqrt(beta_val)*s_local/AgentQuantity + Delta_hat);
-    bound_exact(k)       = C*Delta_hat;
-end
-%}
-%% 9. Save
+%% 8. Save
 if ~exist(SaveFolderName,'dir'), mkdir(SaveFolderName); end
 save(fullfile(SaveFolderName,[SaveFileName,'.mat']), ...
     't_set','TrackingError_vector','CurrentMode');
-    %'bound_distributed','bound_local','bound_exact');
 end

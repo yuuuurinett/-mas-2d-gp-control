@@ -79,8 +79,10 @@ TrackingError_vector = zeros(1, numel(t_set));
 
 %% 6. Mode init: build MaskedGP once via DAC on inducing points
 Kappa_P = 10;
-masked_methods = {'poe','gpoe','moe','bcm','rbcm'};
-if ismember(lower(CurrentMode), masked_methods)
+dac_methods = {'poe','gpoe','moe','bcm','rbcm'};
+ac_methods  = {'poe_ac','gpoe_ac','moe_ac','bcm_ac','rbcm_ac'};
+
+if ismember(lower(CurrentMode), dac_methods)
     [P_inducing, p_dim] = gp_masked_aggregation_init( ...
         LocalGP_set, AgentQuantity, NumInducingPoints, ...
         InducingPoints_Coordinates, lower(CurrentMode));
@@ -89,6 +91,15 @@ if ismember(lower(CurrentMode), masked_methods)
         P_inducing, Zeta_vector_inducing, L, Kappa_P, AgentQuantity, ...
         NumInducingPoints, 0, InducingPoints_Coordinates, SigmaF, SigmaL, ...
         x_dim, lower(CurrentMode), p_dim);
+
+elseif ismember(lower(CurrentMode), ac_methods)
+    base_method = strrep(lower(CurrentMode), '_ac', '');
+    [P_inducing, p_dim] = gp_masked_aggregation_init( ...
+        LocalGP_set, AgentQuantity, NumInducingPoints, ...
+        InducingPoints_Coordinates, base_method);
+    MaskedGP = gp_masked_aggregation_ac( ...
+        P_inducing, InducingPoints_Coordinates, SigmaF, SigmaL, ...
+        x_dim, AgentQuantity, NumInducingPoints, base_method, p_dim);
 end
 
 %% 7. Control Loop
@@ -105,17 +116,22 @@ for k = 1:numel(t_set)
     tic_gp = tic;
 
     switch lower(CurrentMode)
-        case masked_methods
-            % Step 1: predict at current states using fused MaskedGP
+        case dac_methods
             for n = 1:AgentQuantity
                 [mu_hat,~] = MaskedGP{n}.predict(AgentState_matrix(:,n));
                 Phi_Xi_vector(:,n) = mu_hat;
             end
-            % Step 2: update DAC for next step
             [MaskedGP, Zeta_vector_inducing] = gp_masked_aggregation_update( ...
                 P_inducing, Zeta_vector_inducing, L, Kappa_P, AgentQuantity, ...
                 NumInducingPoints, t_step, InducingPoints_Coordinates, ...
                 SigmaF, SigmaL, x_dim, lower(CurrentMode), p_dim);
+
+        case ac_methods
+            for n = 1:AgentQuantity
+                [mu_hat,~] = MaskedGP{n}.predict(AgentState_matrix(:,n));
+                Phi_Xi_vector(:,n) = mu_hat;
+            end
+            % AC: MaskedGP is fixed, no update needed
         case 'local'
             for n = 1:AgentQuantity
                 [mu_n,~] = LocalGP_set{n}.predict(AgentState_matrix(:,n));
